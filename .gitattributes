@@ -1,0 +1,7 @@
+# Collapse notebooks in GitHub diffs — outputs are stripped, but the JSON is
+# still noisy. Run `python -c "..."` strip before committing if outputs sneak back.
+*.ipynb linguist-generated=true
+
+# Frozen binary artifacts — never try to diff or merge these
+*.annot  binary
+*.npy    binary

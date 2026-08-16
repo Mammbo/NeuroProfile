@@ -1,2 +1,25 @@
 .venv
 .env
+.pytest_cache
+
+# python
+__pycache__/
+*.py[cod]
+
+# macOS
+.DS_Store
+
+# generated media / scratch — regenerate with backend/chunker.py
+chunks/
+backend/test_data/
+data/
+
+# large model artifacts (keep on Drive, not in git)
+*.mp4
+*.npz
+readout_W.npy
+
+# NOTE: ica/*.npy and ica/*.json ARE tracked on purpose — they are the frozen
+# reduction mapping the reducer depends on. Keep them small.
+!ica/*.npy
+!ica/*.json

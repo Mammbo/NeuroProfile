@@ -32,7 +32,7 @@ def chunk_video(video, window=100, overlap=10, out_dir='chunks'):
         (
             ffmpeg
             .input(video, ss=windows[i][0], t=windows[i][1] - windows[i][0])
-            .output(out_path, c='copy')
+            .output(out_path)
             .overwrite_output()
             .run(quiet=True)
         )
