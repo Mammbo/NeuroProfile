@@ -9,7 +9,6 @@ import warnings
 from pathlib import Path
 
 
-# get timeline from stitcher!
 labels = np.load("ica/fsaverage5_glasser_labels.npy")
 ids = json.load(open("ica/fsaverage5_glasser_ids.json"))
 m = json.load(open("ica/region_system_map.json"))

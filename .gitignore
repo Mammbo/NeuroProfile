@@ -6,6 +6,7 @@
 __pycache__/
 *.py[cod]
 
+
 # macOS
 .DS_Store
 
@@ -17,9 +18,13 @@ data/
 # large model artifacts (keep on Drive, not in git)
 *.mp4
 *.npz
+!tests/reducer_reference.npz
 readout_W.npy
 
 # NOTE: ica/*.npy and ica/*.json ARE tracked on purpose — they are the frozen
 # reduction mapping the reducer depends on. Keep them small.
 !ica/*.npy
 !ica/*.json
+
+#vector db
+qdrant_data
