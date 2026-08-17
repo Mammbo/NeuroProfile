@@ -1,5 +1,8 @@
 # Daniel Alvarez — 8/16/26
 # Tests for backend/storage.py — embedded Qdrant, no server needed.
+# Covers all of Part 5: _pid, collection, payload schema, vector guard,
+# and the write -> read -> similarity round trip (get_video + search_similar).
+
 import sys, uuid
 from pathlib import Path
 import numpy as np
@@ -11,56 +14,101 @@ import storage
 
 @pytest.fixture
 def db(tmp_path):
-    # fresh embedded DB per test in a temp dir — no shared state, no server
-    return storage.QdrantVecDB(path=str(tmp_path / "qd"))
+    return storage.QdrantVecDB(path=str(tmp_path / "qd"))   # fresh embedded DB per test
 
 
-def _vec(seed):
-    rng = np.random.default_rng(seed)
-    return rng.standard_normal(360).astype(np.float64).tolist()
+def _onehot(i, n=360):
+    v = np.zeros(n, dtype=np.float64)
+    v[i] = 1.0
+    return v.tolist()
 
+
+# --- helpers / conventions -------------------------------------------------
 
 def test_pid_is_deterministic_uuid():
     a = storage._pid("dQw4w9WgXcq")
-    b = storage._pid("dQw4w9WgXcq")
-    assert a == b                       # same video -> same point id
-    assert a != storage._pid("other")   # different video -> different id
-    uuid.UUID(a)                        # is a valid UUID (raises if not)
+    assert a == storage._pid("dQw4w9WgXcq")     # same video -> same id
+    assert a != storage._pid("other")
+    uuid.UUID(a)                                 # valid UUID (raises otherwise)
 
 
-def test_collection_created(db):
+def test_clean_vector_zeros_nonfinite():
+    out = storage._clean_vector([np.nan, np.inf, -np.inf, 3.0] + [0.0] * 356)
+    assert np.isfinite(out).all()
+    assert out[0] == 0.0 and out[1] == 0.0 and out[2] == 0.0 and out[3] == 3.0
+
+
+def test_build_payload_requires_all_fields():
+    with pytest.raises(TypeError):
+        storage.build_payload(video_id="A")      # missing the rest -> TypeError
+
+
+def test_build_payload_full():
+    p = storage.build_payload(
+        video_id="A", title="t", duration=12,
+        system_profile=[0.0] * 6, system_names=["x"] * 6,
+        system_tiers=["high"] * 6, system_derived=[True] * 6,
+        moments=[], timeline_path="/drive/A.npz", transcript="",
+    )
+    assert set(p.keys()) == set(storage.PAYLOAD_FIELDS)
+
+
+# --- collection ------------------------------------------------------------
+
+def test_collection_created_size_360(db):
     assert db.client.collection_exists(db.videos_v1)
     info = db.client.get_collection(db.videos_v1)
     assert info.config.params.vectors.size == 360
 
 
-def test_upsert_then_retrieve_roundtrips_payload(db):
-    db.upsert_video("vidA", _vec(1), payload={"title": "A", "duration": 42})
-    got = db.client.retrieve(db.videos_v1, ids=[storage._pid("vidA")], with_payload=True)
-    assert len(got) == 1
-    assert got[0].payload["video_id"] == "vidA"   # real id injected into payload
-    assert got[0].payload["title"] == "A"
-    assert got[0].payload["duration"] == 42
+# --- write -> read ---------------------------------------------------------
+
+def test_upsert_then_get_video_roundtrips_payload(db):
+    payload = storage.build_payload(
+        video_id="A", title="Rickroll", duration=213,
+        system_profile=[0.1] * 6, system_names=["a"] * 6,
+        system_tiers=["low"] * 6, system_derived=[False] * 6,
+        moments=[{"t": 5, "label": "peak"}], timeline_path="/drive/A.npz",
+        transcript="never gonna give you up",
+    )
+    db.upsert_video("A", _onehot(0), payload=payload)
+    got = db.get_video("A")
+    assert got["video_id"] == "A"
+    assert got["title"] == "Rickroll"
+    assert got["timeline_path"] == "/drive/A.npz"
+    assert got["transcript"] == "never gonna give you up"
+
+
+def test_get_video_missing_returns_none(db):
+    assert db.get_video("does-not-exist") is None
 
 
 def test_upsert_is_idempotent(db):
-    db.upsert_video("vidA", _vec(1))
-    db.upsert_video("vidA", _vec(2))              # same id, new vector -> overwrite, not duplicate
+    db.upsert_video("A", _onehot(0))
+    db.upsert_video("A", _onehot(1))              # same id -> overwrite, not a 2nd point
     assert db.client.count(db.videos_v1).count == 1
 
 
-def test_two_videos_two_points(db):
-    db.upsert_video("vidA", _vec(1))
-    db.upsert_video("vidB", _vec(2))
-    assert db.client.count(db.videos_v1).count == 2
+def test_upsert_cleans_nan_vector(db):
+    v = _onehot(0); v[5] = float("nan"); v[6] = float("inf")
+    db.upsert_video("A", v)                        # insurance: does not raise
+    assert db.get_video("A")["video_id"] == "A"
 
 
-def test_upsert_reports_completed(db):
-    info = db.upsert_video("vidA", _vec(1))
-    assert str(info.status) == "completed"        # UpdateStatus.COMPLETED
+# --- similarity ------------------------------------------------------------
+
+def test_search_ranks_nearer_first(db):
+    db.upsert_video("A", _onehot(0))              # identical to query -> cos 1
+    db.upsert_video("B", _onehot(1))              # orthogonal        -> cos 0
+    res = db.search_similar(_onehot(0), limit=2)
+    assert res[0]["video_id"] == "A"
+    assert res[0]["score"] >= res[1]["score"]
 
 
-# add three more tests
-# get _vidoe
-# serarch 
-# exclude_id dropping the query video
+def test_search_exclude_id_drops_query_video(db):
+    db.upsert_video("A", _onehot(0))
+    db.upsert_video("B", _onehot(1))
+    res = db.search_similar(_onehot(0), limit=5, exclude_id="A")
+    ids = [r["video_id"] for r in res]
+    assert "A" not in ids
+    assert ids[0] == "B"
