@@ -30,11 +30,13 @@ def _vram(tag):
 
 
 def build_cfg(text_cpu):
-    """All backbones on cuda fp16 (single chunk fits). --text-cpu = safety valve."""
+    """VIDEO on GPU (the expensive part); TEXT + AUDIO on CPU.
+    """
+    audio_dev = "cuda" if os.environ.get("NP_AUDIO_GPU") else "cpu"
     return {
-        "data.text_feature.device": "cpu" if text_cpu else "cuda",
+        "data.text_feature.device": "cpu",
         "data.text_feature.batch_size": 8,
-        "data.audio_feature.device": "cuda",
+        "data.audio_feature.device": audio_dev,
         "data.video_feature.image.device": "cuda",
         "data.video_feature.image.batch_size": 2,
         "data.image_feature.image.device": "cuda",
