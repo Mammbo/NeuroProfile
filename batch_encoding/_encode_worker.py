@@ -30,11 +30,11 @@ def _vram(tag):
 
 
 def build_cfg(text_cpu):
-    """VIDEO on GPU (the expensive part); TEXT + AUDIO on CPU.
-    """
+    """VIDEO + TEXT on GPU; AUDIO on CPU."""
+    text_dev = "cpu" if (text_cpu or os.environ.get("NP_TEXT_CPU")) else "cuda"
     audio_dev = "cuda" if os.environ.get("NP_AUDIO_GPU") else "cpu"
     return {
-        "data.text_feature.device": "cpu",
+        "data.text_feature.device": text_dev,
         "data.text_feature.batch_size": 8,
         "data.audio_feature.device": audio_dev,
         "data.video_feature.image.device": "cuda",

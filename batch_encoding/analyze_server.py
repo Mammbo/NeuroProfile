@@ -1,11 +1,5 @@
 #!/usr/bin/env python
 """
-analyze_server.py — LIVE backend for NeuroProfile, runs INSIDE Colab (GPU), exposed via a
-cloudflared tunnel. Accepts an uploaded mp4, encodes it with the same isolated per-chunk
-pipeline as batch_encode, stores it in Qdrant, and serves the result.
-
-This is the compute layer the dashboard upload form and the Chrome extension both POST to.
-
 Endpoints (all CORS-open):
   POST /analyze        multipart file=<mp4>  -> {"job_id","video_id"}   (encode runs in background)
   GET  /jobs/{id}      -> {"status": queued|running|done|error, "stage": "...", "error": ...}
@@ -14,21 +8,13 @@ Endpoints (all CORS-open):
   GET  /api/videos/{video_id}           -> one video + timeline
   GET  /api/videos/{video_id}/similar   -> nearest neighbors
   GET  /health
-
-Run (inside Colab, from repo root, with HF_TOKEN + HF_HOME set):
-  python batch_encoding/analyze_server.py \
-      --qdrant-path   /content/drive/MyDrive/neuroprofile/qdrant_data \
-      --timelines-dir /content/drive/MyDrive/neuroprofile/data/timelines
-Then expose port 8000 with cloudflared (see the notebook cell).
-
-NOTE: embedded Qdrant allows ONE client per process, so this holds a single shared QdrantVecDB
-guarded by a lock. Do NOT also run batch_encode against the same qdrant_path at the same time.
 """
 import argparse
 import hashlib
 import os
 import sys
 import threading
+import time
 import traceback
 import uuid
 from pathlib import Path
@@ -43,6 +29,7 @@ sys.path.insert(0, str(REPO_ROOT / "batch_encoding"))
 import numpy as np
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from chunker import chunk_video
 from stitcher import stitch
@@ -51,7 +38,8 @@ import storage
 from chunk_runner import encode_chunk
 
 CFG = {"qdrant_path": "./qdrant_data", "timelines_dir": "./data/timelines",
-       "work_dir": "./data/work/analyze"}
+       "work_dir": "./data/work/analyze", "videos_dir": ""}
+VIDEO_EXTS = (".mp4", ".webm", ".mov", ".mkv", ".m4v", ".avi")
 
 app = FastAPI(title="NeuroProfile analyze")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -116,27 +104,60 @@ def _load_timeline(timeline_path):
     return _timeline_payload(system_ts, ts, valid)
 
 
+class _Canceled(Exception):
+    """Raised inside a job when the client asked to cancel."""
+
+
 def _run_job(job_id: str, mp4_path: Path, title: str, vid: str):
-    def stage(s):
+    t0 = time.time()
+
+    def emit(msg: str, stage: str = None):
+        """Append a timestamped line to the job log (and stdout), optionally set the stage."""
+        line = f"[{time.time() - t0:5.1f}s] {msg}"
+        print(f"[job {job_id}] {line}", flush=True)
         with _JOBLOCK:
-            _JOBS[job_id]["stage"] = s
+            j = _JOBS.get(job_id)
+            if j is None:
+                return
+            j.setdefault("log", []).append(line)
+            j["log"] = j["log"][-40:]          # keep the tail bounded
+            if stage is not None:
+                j["stage"] = stage
+
+    def check_cancel():
+        with _JOBLOCK:
+            if _JOBS.get(job_id, {}).get("cancel"):
+                raise _Canceled()
+
     try:
         with _JOBLOCK:
             _JOBS[job_id]["status"] = "running"
-        stage("chunking")
+        emit(f"reading upload · {mp4_path.stat().st_size / 1e6:.1f} MB", "reading upload")
+        check_cancel()
+
+        emit("splitting into 100s chunks…", "chunking")
         chunks = chunk_video(str(mp4_path), out_dir=str(Path(CFG["work_dir"]) / vid / "chunks"))
         items = sorted(chunks.items(), key=lambda kv: kv[1])
+        emit(f"{len(items)} chunk(s) to encode")
 
         chunk_predictions = []
         for idx, (path, chunk_start) in enumerate(items):
-            stage(f"encoding chunk {idx + 1}/{len(items)}")
+            check_cancel()
+            emit(f"encoding chunk {idx + 1}/{len(items)} on GPU (isolated subprocess)…",
+                 f"encoding chunk {idx + 1}/{len(items)}")
+            ct = time.time()
             preds, segments = encode_chunk(path)      # isolated subprocess; VRAM freed on exit
+            emit(f"chunk {idx + 1}/{len(items)} done · {len(segments)} segments · "
+                 f"{time.time() - ct:.0f}s")
             chunk_predictions.append((preds, segments, chunk_start))
 
-        stage("reducing")
+        check_cancel()
+        emit("stitching chunks into one timeline…", "stitching")
         timeline, timestamps = stitch(chunk_predictions)
         if timeline.shape[0] == 0:
             raise RuntimeError("no segments survived")
+
+        emit(f"reducing {timeline.shape[0]} rows → 360 regions → 6 systems…", "reducing")
         out = reduce(timeline)
         duration = int(timestamps[-1] - timestamps[0] + 1)
 
@@ -145,6 +166,7 @@ def _run_job(job_id: str, mp4_path: Path, title: str, vid: str):
         np.savez(Path(CFG["timelines_dir"]) / timeline_name,
                  region_ts=out["region_ts"], system_ts=out["system_ts"],
                  timestamps=timestamps, valid=out["valid"])
+        emit(f"saved timeline → {timeline_name}")
 
         moments = _compute_moments(out["system_ts"], timestamps,
                                    out["system_names"], out["system_tiers"])
@@ -155,16 +177,22 @@ def _run_job(job_id: str, mp4_path: Path, title: str, vid: str):
             system_derived=out["system_derived"],
             moments=moments, timeline_path=timeline_name, transcript="",
         )
-        stage("storing")
+        emit("storing vector in Qdrant…", "storing")
         with _DBLOCK:
             get_db().upsert_video(vid, out["summary_vec"], payload=payload)
 
         result = dict(payload)
         result["timeline"] = _timeline_payload(out["system_ts"], timestamps, out["valid"])
+        emit(f"done · {duration}s clip · {time.time() - t0:.0f}s total", "done")
         with _JOBLOCK:
             _JOBS[job_id].update(status="done", stage="done", result=result, video_id=vid)
+    except _Canceled:
+        emit("canceled by user", "canceled")
+        with _JOBLOCK:
+            _JOBS[job_id].update(status="canceled", stage="canceled")
     except Exception as e:
         traceback.print_exc()
+        emit(f"ERROR: {type(e).__name__}: {e}", "error")
         with _JOBLOCK:
             _JOBS[job_id].update(status="error", error=f"{type(e).__name__}: {e}"[:300])
 
@@ -183,9 +211,24 @@ async def analyze(file: UploadFile = File(...)):
     job_id = uuid.uuid4().hex[:12]
     title = file.filename or vid
     with _JOBLOCK:
-        _JOBS[job_id] = {"status": "queued", "stage": "queued", "video_id": vid, "title": title}
+        _JOBS[job_id] = {"status": "queued", "stage": "queued", "video_id": vid,
+                         "title": title, "log": [], "cancel": False}
     threading.Thread(target=_run_job, args=(job_id, mp4, title, vid), daemon=True).start()
     return {"job_id": job_id, "video_id": vid}
+
+
+@app.post("/jobs/{job_id}/cancel")
+def job_cancel(job_id: str):
+    """Ask a running job to stop. It aborts at the next checkpoint (between chunks / stages);
+    a chunk already on the GPU finishes first, then the job stops."""
+    with _JOBLOCK:
+        j = _JOBS.get(job_id)
+        if not j:
+            raise HTTPException(404, "unknown job")
+        if j["status"] in ("done", "error", "canceled"):
+            return {"job_id": job_id, "status": j["status"], "note": "already finished"}
+        j["cancel"] = True
+    return {"job_id": job_id, "status": "canceling"}
 
 
 @app.get("/jobs/{job_id}")
@@ -247,6 +290,32 @@ def api_similar(video_id: str, k: int = 6):
     return [{"score": round(float(h["score"]), 3), **_slim(h["payload"])} for h in hits]
 
 
+def _resolve_video_file(video_id: str):
+    """Map a corpus video_id ('file:<stem>') to a local mp4 in videos_dir, for synced
+    playback. Uploaded/live clips play from the browser's own file, so this is only for
+    the pre-encoded corpus. Returns None (-> 404) when no dir/file is configured."""
+    d = CFG.get("videos_dir")
+    if not d or not Path(d).exists():
+        return None
+    stem = video_id.split(":", 1)[1] if ":" in video_id else video_id
+    for ext in VIDEO_EXTS:
+        p = Path(d) / f"{stem}{ext}"
+        if p.exists():
+            return p
+    for p in Path(d).glob(f"{stem}.*"):
+        if p.suffix.lower() in VIDEO_EXTS:
+            return p
+    return None
+
+
+@app.get("/video/{video_id}")
+def api_video_file(video_id: str):
+    fp = _resolve_video_file(video_id)
+    if not fp:
+        raise HTTPException(404, "no local video file for this id")
+    return FileResponse(fp)
+
+
 @app.get("/health")
 def health():
     return {"ok": True, "qdrant": CFG["qdrant_path"], "jobs": len(_JOBS)}
@@ -257,10 +326,12 @@ if __name__ == "__main__":
     ap.add_argument("--qdrant-path", default="./qdrant_data")
     ap.add_argument("--timelines-dir", default="./data/timelines")
     ap.add_argument("--work-dir", default="./data/work/analyze")
+    ap.add_argument("--videos-dir", default="", help="folder with corpus mp4s (synced playback)")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=8000)
     a = ap.parse_args()
-    CFG.update(qdrant_path=a.qdrant_path, timelines_dir=a.timelines_dir, work_dir=a.work_dir)
+    CFG.update(qdrant_path=a.qdrant_path, timelines_dir=a.timelines_dir, work_dir=a.work_dir,
+               videos_dir=a.videos_dir)
     Path(CFG["work_dir"]).mkdir(parents=True, exist_ok=True)
     get_db()  # open the single shared client up front (fail fast if the path is bad)
     print(f"[analyze] qdrant={CFG['qdrant_path']} timelines={CFG['timelines_dir']}")

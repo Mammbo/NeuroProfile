@@ -30,7 +30,30 @@ def encode_chunk(chunk_path, text_cpu=False, timeout=None):
     cmd = [sys.executable, str(WORKER), chunk_path, out]
     if text_cpu:
         cmd.append("--text-cpu")
-    subprocess.run(cmd, check=True, timeout=timeout)  # raises CalledProcessError on failure
+
+    tail = []
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        for line in proc.stdout:            # stream + capture the tail
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            tail.append(line.rstrip("\n"))
+            tail[:] = tail[-25:]
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        raise RuntimeError(f"chunk encode timed out after {timeout}s")
+
+    if proc.returncode != 0:
+        ctx = "\n".join(tail[-12:])
+        if proc.returncode in (-9, 137):    # SIGKILL from the OS OOM-killer
+            raise RuntimeError(
+                "worker was killed by the OS (SIGKILL) — this is almost always out of memory. "
+                "Text now runs on GPU by default (fp16), which avoids the ~12 GiB CPU-RAM Llama "
+                "load; if it still happens the GPU itself is too small for one chunk. "
+                f"Last worker output:\n{ctx}")
+        raise RuntimeError(f"chunk encode failed (exit {proc.returncode}).\nLast output:\n{ctx}")
+
     with np.load(out) as z:
         preds = z["preds"]
         starts = z["starts"]
