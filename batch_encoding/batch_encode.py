@@ -35,6 +35,7 @@ sys.path.insert(0, str(REPO_ROOT / "batch_encoding"))
 import numpy as np
 
 import input_handler as ih
+from fetcher import download_url, probe_url, sha as _sha
 from chunker import chunk_video
 from stitcher import stitch
 from reducer import reduce
@@ -46,21 +47,6 @@ from chunk_runner import encode_chunk   # spawns _encode_worker.py per chunk (is
 def _now():
     return datetime.now(timezone.utc).isoformat()
 
-# Cookies FILE (only used for the URL route; on Colab you feed files, so it's unused).
-COOKIES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "yt_cookies.txt")
-
-def _ytdlp_opts(extra_argv):
-    from yt_dlp import parse_options
-    argv = ["--js-runtimes", "deno", "--remote-components", "ejs:github"]
-    if os.path.exists(COOKIES_FILE):
-        argv += ["--cookies", COOKIES_FILE]
-    return parse_options(argv + extra_argv).ydl_opts
-
-
-def _sha(s: str, n: int = 12) -> str:
-    return hashlib.sha1(s.encode()).hexdigest()[:n]
-
-
 def _log(logf: Path, record: dict):
     record["ts"] = _now()
     with open(logf, "a") as f:
@@ -71,33 +57,11 @@ def _log(logf: Path, record: dict):
 
 
 #  media in
-def download_url(url: str, work: Path, max_bytes: int):
-    """Returns (path, title, ytid). 480p cap + merge to mp4. (URL route — local use only.)"""
-    import yt_dlp
-    ydl_opts = _ytdlp_opts([
-        "-f", "bv*[height<=480]+ba/b[height<=480]/b",
-        "--merge-output-format", "mp4",
-        "-o", str(work / "%(id)s.%(ext)s"),
-        "--max-filesize", str(max_bytes),
-        "--no-playlist",
-    ])
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        path = Path(ydl.prepare_filename(info)).with_suffix(".mp4")
-    if not path.exists():
-        raise RuntimeError("download produced no file (size cap hit or unavailable format)")
-    return str(path), info.get("title") or url, info.get("id")
-
-
 def resolve_source(source: str, work: Path, max_bytes: int):
     """Normalize one corpus line into (video_id, title, media_kind, (route, payload))."""
     if source.startswith(("http://", "https://")):
-        ih.validate_url(source)                      # SSRF + extractor allowlist
-        import yt_dlp
-        with yt_dlp.YoutubeDL(_ytdlp_opts(["--no-playlist", "--skip-download"])) as ydl:
-            info = ydl.extract_info(source, download=False)
-        vid = f"url:{info.get('id') or _sha(source)}"
-        return vid, (info.get("title") or source), "video", ("__URL__", source)
+        meta = probe_url(source)                     # SSRF + extractor allowlist, no download
+        return meta["video_id"], meta["title"], "video", ("__URL__", source)
 
     p = Path(source)
     if p.exists():

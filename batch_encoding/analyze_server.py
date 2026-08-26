@@ -28,7 +28,7 @@ sys.path.insert(0, str(REPO_ROOT / "backend"))
 sys.path.insert(0, str(REPO_ROOT / "batch_encoding"))
 
 import numpy as np
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
@@ -38,10 +38,13 @@ from reducer import reduce
 import storage
 from serving import (VIDEO_EXTS, compute_moments, faststart_file, load_timeline,
                      media_type_for, resolve_video_file, slim, timeline_payload)
+import input_handler as ih
+from fetcher import FetchError, download_url, probe_url
 from chunk_runner import encode_chunk
 
 CFG = {"qdrant_path": "./qdrant_data", "timelines_dir": "./data/timelines",
-       "work_dir": "./data/work/analyze", "videos_dir": ""}
+       "work_dir": "./data/work/analyze", "videos_dir": "",
+       "max_download_bytes": 2 * 1024 ** 3}
 
 app = FastAPI(title="NeuroProfile analyze")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -73,11 +76,37 @@ def _load_timeline(timeline_path):
         raise HTTPException(404, f"timeline not found: {e}")
 
 
+def _save_playback_copy(data: bytes, stem: str, ext: str = ".mp4") -> None:
+    """Persist the ORIGINAL media (with its audio) into videos_dir — on Colab that is a Drive
+    path — so GET /video/{id} can serve it back later and after a sync-down, not just from the
+    uploader's ephemeral in-browser blob.
+
+    The name must be the id's stem, because that is what serving.resolve_video_file looks for:
+    'upload:<sha>' -> '<sha><ext>', 'url:<ytid>' -> '<ytid><ext>'. Best-effort — a failure here
+    costs playback, not the encode."""
+    if not CFG.get("videos_dir"):
+        return
+    try:
+        ext = ext.lower()
+        if ext not in VIDEO_EXTS:
+            ext = ".mp4"
+        vdir = Path(CFG["videos_dir"])
+        vdir.mkdir(parents=True, exist_ok=True)
+        dest = vdir / f"{stem}{ext}"
+        if not dest.exists():
+            dest.write_bytes(data)
+        print(f"[analyze] saved playback copy -> {dest}", flush=True)
+    except Exception as e:
+        print(f"[analyze] WARN could not save playback copy: {e}", flush=True)
+
+
 class _Canceled(Exception):
     """Raised inside a job when the client asked to cancel."""
 
 
-def _run_job(job_id: str, mp4_path: Path, title: str, vid: str):
+def _run_job(job_id: str, mp4_path: Path, title: str, vid: str, url: str = None):
+    """Encode one clip end to end. If `url` is set, `mp4_path` is ignored and the media is
+    fetched with yt-dlp first — that is the Chrome extension's path."""
     t0 = time.time()
 
     def emit(msg: str, stage: str = None):
@@ -101,7 +130,18 @@ def _run_job(job_id: str, mp4_path: Path, title: str, vid: str):
     try:
         with _JOBLOCK:
             _JOBS[job_id]["status"] = "running"
-        emit(f"reading upload · {mp4_path.stat().st_size / 1e6:.1f} MB", "reading upload")
+        if url:
+            emit(f"downloading with yt-dlp · {url[:70]}", "downloading")
+            work = Path(CFG["work_dir"]) / vid
+            got, dl_title, ytid = download_url(
+                url, work, max_bytes=CFG["max_download_bytes"], validate=False)
+            mp4_path = Path(got)
+            title = dl_title or title
+            with _JOBLOCK:
+                _JOBS[job_id]["title"] = title
+            emit(f"downloaded {mp4_path.name} · {mp4_path.stat().st_size / 1e6:.1f} MB")
+            _save_playback_copy(mp4_path.read_bytes(), ytid, mp4_path.suffix)
+        emit(f"reading media · {mp4_path.stat().st_size / 1e6:.1f} MB", "reading media")
         check_cancel()
 
         emit("splitting into 100s chunks…", "chunking")
@@ -178,23 +218,7 @@ async def analyze(file: UploadFile = File(...)):
     mp4 = work / "input.mp4"
     mp4.write_bytes(data)
 
-    # Persist the ORIGINAL file (with its audio) to the videos dir — on Colab this is a Drive
-    # path — so /video/{vid} can serve it back for playback later and after a sync-down, not
-    # just from the uploader's ephemeral in-browser blob. Named by the id stem so
-    # serving.resolve_video_file finds it: video_id 'upload:<sha>' -> '<sha><ext>'.
-    if CFG.get("videos_dir"):
-        try:
-            ext = Path(file.filename or "").suffix.lower()
-            if ext not in VIDEO_EXTS:
-                ext = ".mp4"
-            vdir = Path(CFG["videos_dir"])
-            vdir.mkdir(parents=True, exist_ok=True)
-            dest = vdir / f"{sha}{ext}"
-            if not dest.exists():
-                dest.write_bytes(data)
-            print(f"[analyze] saved playback copy -> {dest}", flush=True)
-        except Exception as e:
-            print(f"[analyze] WARN could not save playback copy: {e}", flush=True)
+    _save_playback_copy(data, sha, Path(file.filename or "").suffix)
 
     job_id = uuid.uuid4().hex[:12]
     title = file.filename or vid
@@ -203,6 +227,40 @@ async def analyze(file: UploadFile = File(...)):
                          "title": title, "log": [], "cancel": False}
     threading.Thread(target=_run_job, args=(job_id, mp4, title, vid), daemon=True).start()
     return {"job_id": job_id, "video_id": vid}
+
+
+@app.post("/analyze_url")
+async def analyze_url(url: str = Form(...)):
+    """Encode the video at a URL. The backend fetches it with yt-dlp — this is what the
+    Chrome extension calls, so the whole clip is analysed at source quality instead of
+    whatever a tab recording happened to capture.
+
+    Returns the same {"job_id", "video_id"} shape as /analyze. If the clip is already in the
+    store it short-circuits with {"exists": true} and no job, so re-submitting the same tab
+    is cheap — ids match batch_encode.py's `url:<id>` convention.
+    """
+    url = (url or "").strip()
+    if not url:
+        raise HTTPException(400, "empty url")
+    try:
+        meta = probe_url(url)                    # SSRF guard, extractor allowlist, no download
+    except ih.InputError as e:
+        raise HTTPException(400, f"rejected url: {e}")
+    except FetchError as e:
+        raise HTTPException(502, str(e))
+
+    vid, title = meta["video_id"], meta["title"]
+    with _DBLOCK:
+        if get_db().get_video(vid) is not None:
+            return {"video_id": vid, "title": title, "exists": True, "job_id": None}
+
+    job_id = uuid.uuid4().hex[:12]
+    with _JOBLOCK:
+        _JOBS[job_id] = {"status": "queued", "stage": "queued", "video_id": vid,
+                         "title": title, "log": [], "cancel": False, "source": url}
+    threading.Thread(target=_run_job, args=(job_id, None, title, vid),
+                     kwargs={"url": url}, daemon=True).start()
+    return {"job_id": job_id, "video_id": vid, "title": title, "exists": False}
 
 
 @app.post("/jobs/{job_id}/cancel")
@@ -327,11 +385,13 @@ if __name__ == "__main__":
     ap.add_argument("--timelines-dir", default="./data/timelines")
     ap.add_argument("--work-dir", default="./data/work/analyze")
     ap.add_argument("--videos-dir", default="", help="folder with corpus mp4s (synced playback)")
+    ap.add_argument("--max-download-bytes", type=int, default=2 * 1024 ** 3,
+                    help="size cap for /analyze_url yt-dlp downloads (default 2 GiB)")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=8000)
     a = ap.parse_args()
     CFG.update(qdrant_path=a.qdrant_path, timelines_dir=a.timelines_dir, work_dir=a.work_dir,
-               videos_dir=a.videos_dir)
+               videos_dir=a.videos_dir, max_download_bytes=a.max_download_bytes)
     Path(CFG["work_dir"]).mkdir(parents=True, exist_ok=True)
     get_db()  # open the single shared client up front (fail fast if the path is bad)
     print(f"[analyze] qdrant={CFG['qdrant_path']} timelines={CFG['timelines_dir']}")

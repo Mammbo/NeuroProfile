@@ -61,7 +61,7 @@ export default function Page() {
       if (vids.length) select(vids[0].video_id);
       else {
         setVideo(null);
-        setError("No videos yet. Upload one above, or encode a corpus / run serve.py --mock.");
+        setError("No videos yet. Upload one above, or encode a corpus / run backend/serve.py --mock.");
       }
     } catch (e) {
       setVideo(null);

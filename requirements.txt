@@ -1,6 +1,6 @@
 # NeuroProfile — CPU side.
 #
-# This is everything needed to run the offline demo (serve.py), the whole backend/, and the
+# This is everything needed to run the offline demo (backend/serve.py), all of backend/, and
 # full pytest suite. No torch, no CUDA: nothing here loads the model.
 #
 #     python -m venv .venv && .venv/bin/pip install -r requirements.txt

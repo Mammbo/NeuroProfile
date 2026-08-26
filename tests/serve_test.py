@@ -21,8 +21,10 @@ import storage  # noqa: E402
 
 
 def _load_serve():
-    """serve.py lives at the repo root, not on the path as a package."""
-    spec = importlib.util.spec_from_file_location("serve_mod", os.path.join(REPO_ROOT, "serve.py"))
+    """backend/serve.py is a script, not an importable member of the backend package —
+    load it by path so `import serve_mod` can't accidentally resolve something else."""
+    spec = importlib.util.spec_from_file_location(
+        "serve_mod", os.path.join(REPO_ROOT, "backend", "serve.py"))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod

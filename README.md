@@ -96,22 +96,23 @@ Four properties of the pipeline are load-bearing and easy to break:
 ## Architecture
 
 ```
-    capture                       analysis (GPU)                 read + display
- ┌──────────────┐            ┌───────────────────────┐        ┌────────────────┐
- │  dashboard   │  POST      │  analyze_server.py    │        │  Next.js       │
- │  upload      ├──/analyze─►│                       │        │  dashboard     │
- └──────────────┘            │  chunker  100s/10s    │        │                │
- ┌──────────────┐            │  chunk_runner ──┐     │        │  carpet plot   │
- │  Chrome      │  POST      │   one subprocess │    │        │  system bars   │
- │  extension   ├──/analyze─►│   per chunk      ▼    │        │  neighbours    │
- │  (tab audio  │            │            _encode_worker.py   │  synced video  │
- │   + video)   │            │            TRIBE v2 on CUDA    └───────▲────────┘
- └──────────────┘            │  stitcher → reducer   │                │
-                             └──────────┬────────────┘                │
-                                        │                             │
-                             Qdrant videos_v1 (360-d cosine)          │
-                             data/timelines/*.npz  ────────────────► serve.py
-                                                                   (offline, no GPU)
+    capture                        analysis (GPU)                read + display
+ ┌───────────────┐           ┌────────────────────────┐       ┌────────────────┐
+ │  dashboard    │  POST     │  analyze_server.py     │       │  Next.js       │
+ │  upload       ├─/analyze─►│                        │       │  dashboard     │
+ └───────────────┘           │  fetcher (yt-dlp)      │       │                │
+ ┌───────────────┐           │  chunker  100s/10s     │       │  carpet plot   │
+ │  Chrome ext.  │  POST     │  chunk_runner ──┐      │       │  system bars   │
+ │  sends the    ├/analyze_─►│   one subprocess │     │       │  neighbours    │
+ │  tab's link   │   url     │   per chunk      ▼     │       │  synced video  │
+ └───────────────┘           │         _encode_worker.py      └───────▲────────┘
+                             │         TRIBE v2 on CUDA               │
+                             │  stitcher → reducer    │               │
+                             └───────────┬────────────┘               │
+                                         │                            │
+                              Qdrant videos_v1 (360-d cosine)         │
+                              data/timelines/*.npz  ──────────► backend/serve.py
+                                                                  (offline, no GPU)
 ```
 
 **Two run modes.**
@@ -126,7 +127,8 @@ The dashboard's **backend** field takes either one. It is stored in `localStorag
 matters because a cloudflared tunnel URL changes every session — no rebuild needed.
 
 **The split that matters:** everything that touches the model lives in `batch_encoding/` and
-needs CUDA + `tribev2` + gated Llama-3.2-3B. Everything else — `backend/`, `serve.py`,
+needs CUDA + `tribev2` + gated Llama-3.2-3B. Everything else — `backend/` (including
+`serve.py`),
 `tests/`, `frontend/` — is model-free and runs and tests on a laptop against fake arrays.
 
 Some details that were expensive to learn and are cheap to break:
@@ -154,7 +156,7 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 # a corpus is qdrant_data/ + data/timelines/*.npz + the original media in data/videos/.
 # --prewarm builds the browser-playable copy of each clip up front instead of on first click.
-.venv/bin/python serve.py \
+.venv/bin/python backend/serve.py \
     --qdrant-path ./qdrant_data \
     --timelines-dir ./data/timelines \
     --videos-dir ./data/videos \
@@ -163,8 +165,8 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt
 cd frontend && npm install && npm run dev         # http://localhost:3000
 ```
 
-No corpus yet? `serve.py --mock` seeds four obviously-synthetic clips (titled `MOCK — …`) so
-the UI has something to draw. `serve.py --check` reports which stored clips have no playable
+No corpus yet? `backend/serve.py --mock` seeds four obviously-synthetic clips (titled `MOCK — …`) so
+the UI has something to draw. `backend/serve.py --check` reports which stored clips have no playable
 media file, which is the usual thing to go wrong after syncing a corpus down from Drive.
 
 A clip encoded as `video_id = "file:<stem>"` plays only if `<stem>.<ext>` is in
@@ -198,8 +200,15 @@ For an unattended corpus grind: `python batch_encoding/batch_encode.py --corpus 
 ### Chrome extension
 
 Load `neuroprofile-extension/` unpacked at `chrome://extensions` and paste your tunnel URL
-into the popup. It records the active tab and returns a profile. See
-[`neuroprofile-extension/README.md`](neuroprofile-extension/README.md).
+into the popup. **Analyze this video** sends the active tab's link to `POST /analyze_url`,
+and the backend fetches it with yt-dlp — the whole clip at source quality, rather than a
+real-time screen recording. Tab capture is still there as a fallback for sites yt-dlp has no
+extractor for.
+
+One caveat worth knowing up front: **Colab egress IPs are blocked by YouTube**, so the link
+path usually fails against a Colab-hosted backend unless you drop a cookies export at
+`batch_encoding/yt_cookies.txt` on that host (gitignored — it is a live session credential).
+See [`neuroprofile-extension/README.md`](neuroprofile-extension/README.md).
 
 ### Tests
 
@@ -216,9 +225,9 @@ ffmpeg is absent.
 
 | path | what |
 | --- | --- |
-| `backend/` | `chunker`, `stitcher`, `reducer`, `storage`, `input_handler`, `serving` — model-free, tested |
+| `backend/` | `chunker`, `stitcher`, `reducer`, `storage`, `input_handler`, `serving`, `fetcher` — model-free, tested |
 | `batch_encoding/` | GPU side: `analyze_server.py`, `batch_encode.py`, `chunk_runner.py`, `_encode_worker.py` |
-| `serve.py` | the offline read-only API |
+| `backend/serve.py` | the offline read-only API (run it from the repo root) |
 | `frontend/` | the Next.js dashboard |
 | `neuroprofile-extension/` | the MV3 Chrome extension |
 | `ica/` | **frozen** reduction mapping + its derivation (`ica/README.md`). Load-bearing. |
@@ -228,7 +237,7 @@ ffmpeg is absent.
 ## Built with
 
 Python · FastAPI · Qdrant · NumPy/SciPy · PyTorch (GPU side) · ffmpeg ·
-Next.js 14 / React / TypeScript · Chrome MV3 (offscreen documents + `tabCapture`) ·
+Next.js 14 / React / TypeScript · Chrome MV3 (offscreen documents + `tabCapture`) · yt-dlp ·
 Colab + cloudflared
 
 ## Licence

@@ -2,7 +2,8 @@
 
 React/TypeScript dashboard for NeuroProfile. Renders the carpet plot (systems × time,
 playhead-synced to the video), the whole-clip system profile with confidence tiers, and
-nearest-neighbour retrieval. Reads from either FastAPI serving layer — `serve.py` (offline)
+nearest-neighbour retrieval. Reads from either FastAPI serving layer — `backend/serve.py`
+(offline)
 or `batch_encoding/analyze_server.py` (live GPU).
 
 ## Run
@@ -10,8 +11,8 @@ or `batch_encoding/analyze_server.py` (live GPU).
 1. Start an API. Offline, from the repo root, with a synced `qdrant_data/` and
    `data/timelines/`:
    ```bash
-   python serve.py --videos-dir ./data/videos --prewarm    # http://localhost:8000
-   python serve.py --mock                                  # or: four synthetic clips
+   python backend/serve.py --videos-dir ./data/videos --prewarm   # http://localhost:8000
+   python backend/serve.py --mock                                 # or: four synthetic clips
    ```
 2. Start this app:
    ```bash
