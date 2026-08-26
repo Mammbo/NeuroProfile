@@ -9,9 +9,12 @@ Endpoints (all CORS-open):
   GET  /api/videos/{video_id}/similar   -> nearest neighbors
   GET  /health
 """
+
 import argparse
 import hashlib
 import os
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -202,11 +205,30 @@ async def analyze(file: UploadFile = File(...)):
     data = await file.read()
     if not data:
         raise HTTPException(400, "empty upload")
-    vid = f"upload:{_sha(data)}"
+    sha = _sha(data)
+    vid = f"upload:{sha}"
     work = Path(CFG["work_dir"]) / vid
     work.mkdir(parents=True, exist_ok=True)
     mp4 = work / "input.mp4"
     mp4.write_bytes(data)
+
+    # Persist the ORIGINAL file (with its audio) to the videos dir — on Colab this is a Drive
+    # path — so /video/{vid} can serve it back for playback later and after a sync-down, not
+    # just from the uploader's ephemeral in-browser blob. Named by the id stem so
+    # _resolve_video_file finds it: video_id 'upload:<sha>' -> '<sha><ext>'.
+    if CFG.get("videos_dir"):
+        try:
+            ext = Path(file.filename or "").suffix.lower()
+            if ext not in VIDEO_EXTS:
+                ext = ".mp4"
+            vdir = Path(CFG["videos_dir"])
+            vdir.mkdir(parents=True, exist_ok=True)
+            dest = vdir / f"{sha}{ext}"
+            if not dest.exists():
+                dest.write_bytes(data)
+            print(f"[analyze] saved playback copy -> {dest}", flush=True)
+        except Exception as e:
+            print(f"[analyze] WARN could not save playback copy: {e}", flush=True)
 
     job_id = uuid.uuid4().hex[:12]
     title = file.filename or vid
@@ -291,9 +313,8 @@ def api_similar(video_id: str, k: int = 6):
 
 
 def _resolve_video_file(video_id: str):
-    """Map a corpus video_id ('file:<stem>') to a local mp4 in videos_dir, for synced
-    playback. Uploaded/live clips play from the browser's own file, so this is only for
-    the pre-encoded corpus. Returns None (-> 404) when no dir/file is configured."""
+    """Map a video_id ('file:<stem>' or 'upload:<sha>') to a local mp4 in videos_dir, for
+    playback. Returns None (-> 404) when no dir/file is configured."""
     d = CFG.get("videos_dir")
     if not d or not Path(d).exists():
         return None
@@ -303,9 +324,42 @@ def _resolve_video_file(video_id: str):
         if p.exists():
             return p
     for p in Path(d).glob(f"{stem}.*"):
-        if p.suffix.lower() in VIDEO_EXTS:
+        if p.suffix.lower() in VIDEO_EXTS and not p.name.endswith(".fs.mp4"):
             return p
     return None
+
+
+def _faststart_file(fp: Path) -> Path:
+    """Return a streamable (faststart) copy of fp, remuxing + caching on first use.
+
+    iPhone/most mp4s put the `moov` atom at the END of the file. That plays fine from disk
+    (whole file in memory) but over HTTP range the browser can't line up the audio track and
+    silently drops it — video plays, no sound. `-movflags +faststart -c copy` moves the index
+    to the front (fast, no re-encode) and fixes streaming. Cached next to the source, keyed by
+    mtime, so the remux happens once. Falls back to the original if ffmpeg is missing or fails.
+    webm/mkv stream fine and are returned as-is."""
+    try:
+        if fp.suffix.lower() not in (".mp4", ".m4v", ".mov"):
+            return fp
+        cache = fp.with_name(fp.name + ".fs.mp4")
+        if cache.exists() and cache.stat().st_mtime >= fp.stat().st_mtime:
+            return cache
+        if shutil.which("ffmpeg") is None:
+            return fp
+        tmp = fp.with_name(fp.name + ".fs.tmp.mp4")
+        r = subprocess.run(
+            ["ffmpeg", "-y", "-i", str(fp), "-c", "copy", "-movflags", "+faststart", str(tmp)],
+            capture_output=True)
+        if r.returncode == 0 and tmp.exists():
+            tmp.replace(cache)
+            print(f"[video] faststart-remuxed {fp.name} -> {cache.name}", flush=True)
+            return cache
+        if tmp.exists():
+            tmp.unlink()
+        return fp
+    except Exception as e:
+        print(f"[video] faststart remux failed for {fp}: {e}", flush=True)
+        return fp
 
 
 @app.get("/video/{video_id}")
@@ -313,7 +367,36 @@ def api_video_file(video_id: str):
     fp = _resolve_video_file(video_id)
     if not fp:
         raise HTTPException(404, "no local video file for this id")
-    return FileResponse(fp)
+    return FileResponse(_faststart_file(fp), media_type="video/mp4")
+
+
+@app.delete("/api/videos/{video_id}")
+def api_delete(video_id: str):
+    """Remove a clip everywhere: the Qdrant vector, its timeline .npz, and the video file
+    (+ faststart cache). Idempotent-ish: 404 only if the vector isn't in the DB."""
+    db = get_db()
+    with _DBLOCK:
+        p = db.get_video(video_id)
+        if not p:
+            raise HTTPException(404, "not found")
+        db.delete_video(video_id)
+    # timeline .npz
+    tp = p.get("timeline_path")
+    if tp:
+        try:
+            (Path(CFG["timelines_dir"]) / os.path.basename(tp)).unlink(missing_ok=True)
+        except Exception as e:
+            print(f"[delete] timeline: {e}", flush=True)
+    # video file + its faststart cache
+    fp = _resolve_video_file(video_id)
+    if fp:
+        for f in (fp, fp.with_name(fp.name + ".fs.mp4")):
+            try:
+                f.unlink(missing_ok=True)
+            except Exception as e:
+                print(f"[delete] video: {e}", flush=True)
+    print(f"[delete] removed {video_id}", flush=True)
+    return {"deleted": video_id}
 
 
 @app.get("/health")
