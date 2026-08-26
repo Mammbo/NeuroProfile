@@ -172,14 +172,8 @@ export default function Page() {
             />
             <button className="apiconnect" onClick={applyApiBase}>connect</button>
           </div>
-          <div className="meta">{videos.length} clips · TRIBE v2 · CC BY-NC</div>
+          <div className="meta">{videos.length} clips · TRIBE v2 </div>
         </div>
-      </div>
-
-      <div className="disclaimer">
-        Population-average predictions from a group model — not a measurement of any
-        individual&rsquo;s brain, and not a claim about how a video affects you. Systems are
-        tiered by confidence.
       </div>
 
       {error && <div className="err">{error}</div>}
@@ -279,11 +273,6 @@ export default function Page() {
           )}
         </div>
       )}
-
-      <div className="foot">
-        TRIBE v2 is CC BY-NC — research/portfolio demo only. Output is 1 Hz, cortical surface
-        (20,484 vertices) reduced to 360 regions → 6 functional systems.
-      </div>
     </div>
   );
 }
