@@ -2,15 +2,6 @@
 """
 serve.py — the OFFLINE read-only API for the NeuroProfile dashboard.
 
-No GPU, no torch, no tribev2: it just reads a corpus that was already encoded (Qdrant
-vectors + timeline .npz on disk) and serves it to the Next.js dashboard. This is the safe
-demo path. For live uploads run batch_encoding/analyze_server.py on a GPU box instead —
-it speaks the same read API plus /analyze.
-
-    python serve.py --qdrant-path ./qdrant_data \
-                    --timelines-dir ./data/timelines \
-                    --videos-dir ./data/videos            # :8000
-
 Endpoints (all CORS-open):
   GET    /api/videos                     list the corpus
   GET    /api/videos/{id}                one clip + its timeline

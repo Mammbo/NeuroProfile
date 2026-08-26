@@ -1,11 +1,5 @@
 """
 serving.py — read-side helpers shared by the two HTTP front-ends.
-
-  serve.py                        offline demo, no GPU, reads a pre-encoded corpus
-  batch_encoding/analyze_server.py  live GPU backend (same reads + /analyze)
-
-Nothing here imports torch, tribev2 or reducer, so it is importable (and testable) on the
-CPU-only Mac venv. Keep it that way — the GPU-only code belongs in batch_encoding/.
 """
 import glob as _glob
 import os
@@ -89,9 +83,6 @@ def resolve_video_file(videos_dir, video_id):
     return None
 
 
-# Codecs a browser will reliably decode from an <video src> over plain HTTP. yt-dlp hands
-# back AV1+Opus muxed into mp4, which Safari cannot play at all and which some Chrome builds
-# play silently (video, no sound) — so anything outside these sets gets transcoded once.
 WEB_SAFE_VIDEO = {"h264", "avc1"}
 WEB_SAFE_AUDIO = {"aac", "mp3"}
 
@@ -123,20 +114,6 @@ def probe_codecs(fp: Path):
 
 
 def faststart_file(fp: Path) -> Path:
-    """Return a browser-streamable copy of fp, built and cached on first use.
-
-    Two problems this fixes, both of which show up as "video plays, no sound":
-
-    1. `moov` at the end. Most mp4s put the index last. That plays fine off disk but over an
-       HTTP range request the browser can't line up the audio track and drops it.
-       `-movflags +faststart` moves the index to the front.
-    2. Codecs the browser can't decode. yt-dlp's best-quality mp4 is AV1 video + Opus audio;
-       Safari plays neither, and some Chrome builds take the video and skip the audio. So any
-       stream outside WEB_SAFE_* is re-encoded (h264 / aac) while the safe one is copied.
-
-    The result is cached next to the source as `<name>.fs.mp4`, keyed by mtime, so the cost
-    is paid once per clip. Falls back to the original if ffmpeg is missing or fails.
-    webm/mkv are containers the dashboard already streams fine and pass through untouched."""
     try:
         if fp.suffix.lower() not in (".mp4", ".m4v", ".mov"):
             return fp
