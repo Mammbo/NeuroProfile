@@ -13,8 +13,6 @@ Endpoints (all CORS-open):
 import argparse
 import hashlib
 import os
-import shutil
-import subprocess
 import sys
 import threading
 import time
@@ -38,11 +36,12 @@ from chunker import chunk_video
 from stitcher import stitch
 from reducer import reduce
 import storage
+from serving import (VIDEO_EXTS, compute_moments, faststart_file, load_timeline,
+                     media_type_for, resolve_video_file, slim, timeline_payload)
 from chunk_runner import encode_chunk
 
 CFG = {"qdrant_path": "./qdrant_data", "timelines_dir": "./data/timelines",
        "work_dir": "./data/work/analyze", "videos_dir": ""}
-VIDEO_EXTS = (".mp4", ".webm", ".mov", ".mkv", ".m4v", ".avi")
 
 app = FastAPI(title="NeuroProfile analyze")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -66,45 +65,12 @@ def _sha(b: bytes, n: int = 12) -> str:
     return hashlib.sha1(b).hexdigest()[:n]
 
 
-def _compute_moments(system_ts, timestamps, names, tiers, top_k=8):
-    from scipy.signal import find_peaks
-    out = []
-    for s in range(system_ts.shape[1]):
-        col = system_ts[:, s]
-        mask = ~np.isnan(col)
-        if mask.sum() < 3:
-            continue
-        filled = np.where(mask, col, np.nanmin(col[mask]))
-        peaks, _ = find_peaks(filled, distance=3)
-        for pk in peaks:
-            out.append({"t": int(timestamps[pk]), "system": names[s],
-                        "tier": tiers[s], "value": float(col[pk])})
-    out.sort(key=lambda m: m["value"], reverse=True)
-    return out[:top_k]
-
-
-def _timeline_payload(system_ts, timestamps, valid):
-    st = np.where(np.isfinite(system_ts), system_ts, 0.0)
-    return {"times": [float(t) for t in timestamps],
-            "system_ts": st.tolist(),
-            "valid": [bool(v) for v in valid]}
-
-
-def _slim(p):
-    return {"video_id": p["video_id"], "title": p.get("title", p["video_id"]),
-            "duration": p.get("duration"), "system_names": p.get("system_names"),
-            "system_tiers": p.get("system_tiers"), "system_profile": p.get("system_profile")}
-
-
 def _load_timeline(timeline_path):
-    fp = Path(CFG["timelines_dir"]) / os.path.basename(timeline_path)
-    if not fp.exists():
-        raise HTTPException(404, f"timeline not found: {fp.name}")
-    z = np.load(fp)
-    system_ts = z["system_ts"].astype(float)
-    ts = z["timestamps"].astype(float) if "timestamps" in z else np.arange(system_ts.shape[0], dtype=float)
-    valid = z["valid"].astype(bool) if "valid" in z else ~np.isnan(system_ts).any(axis=1)
-    return _timeline_payload(system_ts, ts, valid)
+    """CFG-bound wrapper — see backend/serving.load_timeline."""
+    try:
+        return load_timeline(CFG["timelines_dir"], timeline_path)
+    except FileNotFoundError as e:
+        raise HTTPException(404, f"timeline not found: {e}")
 
 
 class _Canceled(Exception):
@@ -171,7 +137,7 @@ def _run_job(job_id: str, mp4_path: Path, title: str, vid: str):
                  timestamps=timestamps, valid=out["valid"])
         emit(f"saved timeline → {timeline_name}")
 
-        moments = _compute_moments(out["system_ts"], timestamps,
+        moments = compute_moments(out["system_ts"], timestamps,
                                    out["system_names"], out["system_tiers"])
         payload = storage.build_payload(
             video_id=vid, title=title, duration=duration,
@@ -185,7 +151,7 @@ def _run_job(job_id: str, mp4_path: Path, title: str, vid: str):
             get_db().upsert_video(vid, out["summary_vec"], payload=payload)
 
         result = dict(payload)
-        result["timeline"] = _timeline_payload(out["system_ts"], timestamps, out["valid"])
+        result["timeline"] = timeline_payload(out["system_ts"], timestamps, out["valid"])
         emit(f"done · {duration}s clip · {time.time() - t0:.0f}s total", "done")
         with _JOBLOCK:
             _JOBS[job_id].update(status="done", stage="done", result=result, video_id=vid)
@@ -215,7 +181,7 @@ async def analyze(file: UploadFile = File(...)):
     # Persist the ORIGINAL file (with its audio) to the videos dir — on Colab this is a Drive
     # path — so /video/{vid} can serve it back for playback later and after a sync-down, not
     # just from the uploader's ephemeral in-browser blob. Named by the id stem so
-    # _resolve_video_file finds it: video_id 'upload:<sha>' -> '<sha><ext>'.
+    # serving.resolve_video_file finds it: video_id 'upload:<sha>' -> '<sha><ext>'.
     if CFG.get("videos_dir"):
         try:
             ext = Path(file.filename or "").suffix.lower()
@@ -281,7 +247,7 @@ def api_videos():
         while True:
             pts, offset = db.client.scroll(db.videos_v1, limit=256, offset=offset,
                                            with_payload=True, with_vectors=False)
-            out.extend(_slim(p.payload) for p in pts)
+            out.extend(slim(p.payload) for p in pts)
             if offset is None:
                 break
     return out
@@ -309,65 +275,16 @@ def api_similar(video_id: str, k: int = 6):
             raise HTTPException(404, "not found")
         vec = recs[0].vector
         hits = db.search_similar(vec, limit=k, exclude_id=video_id)
-    return [{"score": round(float(h["score"]), 3), **_slim(h["payload"])} for h in hits]
-
-
-def _resolve_video_file(video_id: str):
-    """Map a video_id ('file:<stem>' or 'upload:<sha>') to a local mp4 in videos_dir, for
-    playback. Returns None (-> 404) when no dir/file is configured."""
-    d = CFG.get("videos_dir")
-    if not d or not Path(d).exists():
-        return None
-    stem = video_id.split(":", 1)[1] if ":" in video_id else video_id
-    for ext in VIDEO_EXTS:
-        p = Path(d) / f"{stem}{ext}"
-        if p.exists():
-            return p
-    for p in Path(d).glob(f"{stem}.*"):
-        if p.suffix.lower() in VIDEO_EXTS and not p.name.endswith(".fs.mp4"):
-            return p
-    return None
-
-
-def _faststart_file(fp: Path) -> Path:
-    """Return a streamable (faststart) copy of fp, remuxing + caching on first use.
-
-    iPhone/most mp4s put the `moov` atom at the END of the file. That plays fine from disk
-    (whole file in memory) but over HTTP range the browser can't line up the audio track and
-    silently drops it — video plays, no sound. `-movflags +faststart -c copy` moves the index
-    to the front (fast, no re-encode) and fixes streaming. Cached next to the source, keyed by
-    mtime, so the remux happens once. Falls back to the original if ffmpeg is missing or fails.
-    webm/mkv stream fine and are returned as-is."""
-    try:
-        if fp.suffix.lower() not in (".mp4", ".m4v", ".mov"):
-            return fp
-        cache = fp.with_name(fp.name + ".fs.mp4")
-        if cache.exists() and cache.stat().st_mtime >= fp.stat().st_mtime:
-            return cache
-        if shutil.which("ffmpeg") is None:
-            return fp
-        tmp = fp.with_name(fp.name + ".fs.tmp.mp4")
-        r = subprocess.run(
-            ["ffmpeg", "-y", "-i", str(fp), "-c", "copy", "-movflags", "+faststart", str(tmp)],
-            capture_output=True)
-        if r.returncode == 0 and tmp.exists():
-            tmp.replace(cache)
-            print(f"[video] faststart-remuxed {fp.name} -> {cache.name}", flush=True)
-            return cache
-        if tmp.exists():
-            tmp.unlink()
-        return fp
-    except Exception as e:
-        print(f"[video] faststart remux failed for {fp}: {e}", flush=True)
-        return fp
+    return [{"score": round(float(h["score"]), 3), **slim(h["payload"])} for h in hits]
 
 
 @app.get("/video/{video_id}")
 def api_video_file(video_id: str):
-    fp = _resolve_video_file(video_id)
+    fp = resolve_video_file(CFG["videos_dir"], video_id)
     if not fp:
         raise HTTPException(404, "no local video file for this id")
-    return FileResponse(_faststart_file(fp), media_type="video/mp4")
+    served = faststart_file(fp)
+    return FileResponse(served, media_type=media_type_for(served))
 
 
 @app.delete("/api/videos/{video_id}")
@@ -388,7 +305,7 @@ def api_delete(video_id: str):
         except Exception as e:
             print(f"[delete] timeline: {e}", flush=True)
     # video file + its faststart cache
-    fp = _resolve_video_file(video_id)
+    fp = resolve_video_file(CFG["videos_dir"], video_id)
     if fp:
         for f in (fp, fp.with_name(fp.name + ".fs.mp4")):
             try:
