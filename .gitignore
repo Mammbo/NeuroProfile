@@ -1,30 +1,58 @@
-.venv
+# --- secrets ------------------------------------------------------------------
 .env
-.pytest_cache
+.env.local
+.env.*.local
+# YouTube auth cookies for yt-dlp. NEVER commit these — they are live session
+# credentials for a Google account.
+yt_cookies.txt
+batch_encoding/yt_cookies.txt
+**/cookies.txt
 
-# python
+# --- python -------------------------------------------------------------------
+.venv/
+venv/
 __pycache__/
 *.py[cod]
+.pytest_cache/
+*.egg-info/
 
+# --- node / next ----------------------------------------------------------------
+node_modules/
+.next/
+out/
+npm-debug.log*
 
-# macOS
+# --- macOS ----------------------------------------------------------------------
 .DS_Store
 
-# generated media / scratch — regenerate with backend/chunker.py
+# --- generated media & scratch (regenerate with backend/chunker.py) --------------
 chunks/
 backend/test_data/
 data/
+hf_cache/
 
-# large model artifacts (keep on Drive, not in git)
+# --- large binaries: keep these on Drive, not in git ------------------------------
 *.mp4
+*.webm
+*.mkv
+*.mov
+*.m4v
+*.fs.mp4
 *.npz
-!tests/reducer_reference.npz
 readout_W.npy
 
-# NOTE: ica/*.npy and ica/*.json ARE tracked on purpose — they are the frozen
-# reduction mapping the reducer depends on. Keep them small.
+# --- vector db --------------------------------------------------------------------
+qdrant_data/
+
+# --- archives -----------------------------------------------------------------------
+*.zip
+
+# =====================================================================================
+# Force-included exceptions. These are LOAD-BEARING, not leftovers:
+#   ica/*.npy, ica/*.json    the frozen reduction mapping — reducer.py does
+#                            np.load("ica/...") at import time and cannot start without it
+#   tests/reducer_reference.npz  the committed regression oracle for reducer_test.py
+# Do not "clean up" these negations.
 !ica/*.npy
 !ica/*.json
-
-#vector db
-qdrant_data
+!tests/reducer_reference.npz

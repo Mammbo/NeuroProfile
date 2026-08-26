@@ -1,0 +1,24 @@
+# NeuroProfile — GPU side. Reference only.
+#
+# PREFER `bash batch_encoding/setup_gpu.sh`. Install ORDER matters and a flat
+# `pip install -r` will get it wrong: torch must land first from the cu121 index, and numpy
+# must be pinned *after* it, or torch pulls a numpy build it prefers and the worker crashes
+# at import. This file records what ends up installed, for reproducing an environment by hand.
+#
+# Requires: a CUDA 12.1-capable GPU, and Hugging Face access to two gated repos
+# (facebook/tribev2 and meta-llama/Llama-3.2-3B — click "agree" on both in a browser first).
+# Authenticate with `hf auth login`; never hardcode a token.
+
+# 1. torch triple, from the cu121 index:
+#      pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
+#          --index-url https://download.pytorch.org/whl/cu121
+torch==2.5.1
+torchvision==0.20.1
+torchaudio==2.5.1
+
+# 2. then numpy, pinned, so step 1 can't override it
+numpy==2.2.6
+
+# 3. the model itself + everything from requirements.txt
+tribev2
+-r requirements.txt
