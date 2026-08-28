@@ -13,10 +13,12 @@ https://github.com/user-attachments/assets/3d72662e-6dda-4347-8d06-72c61194b155
 
 ---
 
-## Honest claims
+## Honest claims / AI Usage
 
 **These are population-average predictions from a model trained on group fMRI. They are not
 a measurement of any viewer's brain, and not a claim about how a video affects anyone.**
+
+**I used AI to help plan what to code as well as for one commit to retrieve files i accidently deleted by going through the commit history.**
 
 
 Reliability is **tiered**, and the tiers survive from `ica/region_system_map.json` all the way
