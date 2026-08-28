@@ -1,7 +1,6 @@
 # Functional systems recovered from the TRIBE v2 readout
 
-**Frozen 2026-08-15.** These files are inputs to the reducer — regenerating them
-changes every downstream number, so treat them as fixed.
+**Frozen 2026-08-15.** These files are inputs to the reducer. 
 
 | file | what it is |
 | --- | --- |
@@ -35,13 +34,6 @@ component it loads onto most strongly, by mean absolute loading.
 | 4 | `dmn_scene_medial_parietal` | moderate | 93 | POS1, v23ab, 31pd, 7m, PHA1/2, VMV2/3 |
 | 5 | `affect_reward` | low | 48 | anterior insula, ACC, OFC/vmPFC |
 
-Components 0–4 are data-derived. **System 5 is not** — it is a hand-assigned
-literature-based set, flagged `"derived": false` in the JSON. TRIBE v2 released
-cortical weights only, so there is no amygdala or accumbens; anterior insula,
-ACC and OFC/vmPFC are cortical proxies and are tiered Low accordingly.
-Posterior insula (`PoI1`/`PoI2`) was deliberately excluded — it is
-interoceptive/somatosensory, not affect/reward.
-
 ## Validation
 
 - **360/360 regions** assigned; 1,742 medial-wall vertices (8.5%) excluded as `???`.
@@ -66,15 +58,7 @@ this directly — **`V1` (primary visual) and `4` (primary motor) both land in
 This is consistent with the model's known behaviour rather than a bug in the
 decomposition. Early/retinotopic visual structure is degraded by V-JEPA2's
 spatial averaging, and movie-watching involves no motor task, so neither region
-has strong readout structure to recover. **Early visual and motor assignments
-should be treated as low-confidence** and not reported as findings.
+has strong readout structure to recover.
 
 A refinement worth trying if these systems are revisited: z-score each component
 map before the argmax, so component scale cannot dominate the assignment.
-
-## Honest-claims boundary
-
-These are population-average predictions from a model trained on group fMRI, not
-a measurement of any viewer's brain. Output should be described as a predicted
-average cortical-response profile. Reliability is tiered in the JSON and those
-tiers must survive into the UI.

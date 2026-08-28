@@ -5,10 +5,10 @@ activity onto six functional systems over time, and store each clip as a searcha
 360-dimensional vector. A Next.js dashboard plays the clip against a carpet plot of the
 predicted response, second by second, and finds the nearest neighbours in the corpus.
 
+### Demo
+https://github.com/user-attachments/assets/3d72662e-6dda-4347-8d06-72c61194b155
 
-![demo](docs/demo.gif)
-<!-- TODO(owner): record docs/demo.gif and docs/dashboard.png — see docs/README.md -->
-
+### Dashboard 
 ![dashboard](docs/dashboard.png)
 
 ---
@@ -18,8 +18,6 @@ predicted response, second by second, and finds the nearest neighbours in the co
 **These are population-average predictions from a model trained on group fMRI. They are not
 a measurement of any viewer's brain, and not a claim about how a video affects anyone.**
 
-The right way to describe an output is *"a predicted average cortical-response profile."*
-Nothing in this repo claims manipulation, persuasion, or personal effect, and nothing should.
 
 Reliability is **tiered**, and the tiers survive from `ica/region_system_map.json` all the way
 into the dashboard and the extension popup:
@@ -33,7 +31,7 @@ into the dashboard and the extension popup:
 | `dmn_scene_medial_parietal` | moderate | data-derived, also a catch-all |
 | `affect_reward` | **low** | **hand-assigned, not derived** (`"derived": false`) |
 
-Four things a careful reader should know:
+Four things to know:
 
 - **`affect_reward` is not data-derived.** TRIBE v2 released cortical weights only — there is
   no amygdala, no accumbens. It is a hand-assigned set of cortical proxies (anterior insula,
@@ -46,10 +44,9 @@ Four things a careful reader should know:
   assignments must never be reported as findings.
 - **Cortex only, 20,484 vertices.** Subcortical predictions were never released.
 
-The full derivation, the validation that was run, and the limitations in detail are in
+The full derivation, the validation that was run in detail are in
 [`ica/README.md`](ica/README.md).
 
-**Licence:** TRIBE v2 is **CC BY-NC**. Research and portfolio use only — no monetization.
 
 ---
 
@@ -78,16 +75,6 @@ dimensions as samples and the vertices as features, so each component is a spati
 cortex. Every Glasser region was assigned to the component it loads onto most strongly.
 `affect_reward` is the one exception — added by hand, flagged, and tiered low.
 
-Four properties of the pipeline are load-bearing and easy to break:
-
-1. **No hemodynamic shift is applied in this repo.** TRIBE already applies the −5 s offset.
-   Subtracting it again double-corrects.
-2. **No re-z-scoring or detrending.** The model's `FmriCleaner` already did it.
-3. **Output is 1 Hz** (`TR = 1.0`), and a row's time is read from `segment.start`.
-4. **`predict` drops empty segments**, so the row count is not the second count. Everything
-   aligns by `segment.start`, never by array position; dropped seconds stay `NaN` through the
-   whole pipeline (`np.nanmean` throughout) and reach the UI as a `valid` mask.
-
 ---
 
 ## Architecture
@@ -98,11 +85,11 @@ Four properties of the pipeline are load-bearing and easy to break:
  │  dashboard    │  POST     │  analyze_server.py     │       │  Next.js       │
  │  upload       ├─/analyze─►│                        │       │  dashboard     │
  └───────────────┘           │  fetcher (yt-dlp)      │       │                │
- ┌───────────────┐           │  chunker  100s/10s     │       │  carpet plot   │
- │  Chrome ext.  │  POST     │  chunk_runner ──┐      │       │  system bars   │
- │  sends the    ├/analyze_─►│   one subprocess │     │       │  neighbours    │
- │  tab's link   │   url     │   per chunk      ▼     │       │  synced video  │
- └───────────────┘           │         _encode_worker.py      └───────▲────────┘
+                             │  chunker  100s/10s     │       │  carpet plot   │
+                             │  chunk_runner  ──┐     │       │  system bars   │
+                             │   one subprocess │     │       │  neighbours    │
+                             │   per chunk      ▼     │       │  synced video  │  
+                             │         _encode_worker.py      └───────▲────────┘
                              │         TRIBE v2 on CUDA               │
                              │  stitcher → reducer    │               │
                              └───────────┬────────────┘               │
@@ -171,7 +158,7 @@ A clip encoded as `video_id = "file:<stem>"` plays only if `<stem>.<ext>` is in
 
 ### Live encoding (GPU)
 
-`notebooks/neuroprofile_colab.ipynb` is the working GPU environment. On any CUDA box:
+`notebooks/neuroprofile_colab.ipynb` is the working GPU environment. On any CUDA box: (Essentially just run neuroprofile_colab.ipynb, get cloudflare tunnel url, start up webserver and then paste it and connect to it in the dashboard.)
 
 ```bash
 bash batch_encoding/setup_gpu.sh                  # pinned deps, HF auth, punkt
@@ -194,19 +181,6 @@ call. Persist everything to Drive — a runtime disconnect mid-corpus should be 
 
 For an unattended corpus grind: `python batch_encoding/batch_encode.py --corpus corpus.txt`.
 
-### Chrome extension
-
-Load `neuroprofile-extension/` unpacked at `chrome://extensions` and paste your tunnel URL
-into the popup. **Analyze this video** sends the active tab's link to `POST /analyze_url`,
-and the backend fetches it with yt-dlp — the whole clip at source quality, rather than a
-real-time screen recording. Tab capture is still there as a fallback for sites yt-dlp has no
-extractor for.
-
-One caveat worth knowing up front: **Colab egress IPs are blocked by YouTube**, so the link
-path usually fails against a Colab-hosted backend unless you drop a cookies export at
-`batch_encoding/yt_cookies.txt` on that host (gitignored — it is a live session credential).
-See [`neuroprofile-extension/README.md`](neuroprofile-extension/README.md).
-
 ### Tests
 
 ```bash
@@ -226,7 +200,6 @@ ffmpeg is absent.
 | `batch_encoding/` | GPU side: `analyze_server.py`, `batch_encode.py`, `chunk_runner.py`, `_encode_worker.py` |
 | `backend/serve.py` | the offline read-only API (run it from the repo root) |
 | `frontend/` | the Next.js dashboard |
-| `neuroprofile-extension/` | the MV3 Chrome extension |
 | `ica/` | **frozen** reduction mapping + its derivation (`ica/README.md`). Load-bearing. |
 | `tests/` | pytest suite; `tests/reducer_reference.npz` is a committed regression oracle |
 | `notebooks/` | the Colab GPU environment and the ICA analysis |
@@ -234,11 +207,5 @@ ffmpeg is absent.
 ## Built with
 
 Python · FastAPI · Qdrant · NumPy/SciPy · PyTorch (GPU side) · ffmpeg ·
-Next.js 14 / React / TypeScript · Chrome MV3 (offscreen documents + `tabCapture`) · yt-dlp ·
+Next.js 14 / React / TypeScript · (offscreen documents + `tabCapture`) · yt-dlp ·
 Colab + cloudflared
-
-## Licence
-
-Code in this repository is available for research and portfolio use. It depends on
-**TRIBE v2, which is CC BY-NC** — non-commercial only. Do not monetize anything built from
-this.
