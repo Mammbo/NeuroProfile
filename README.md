@@ -6,7 +6,7 @@ activity onto six functional systems over time, and store each clip as a searcha
 predicted response, second by second, and finds the nearest neighbours in the corpus.
 
 ### Demo
-https://github.com/user-attachments/assets/c52f2903-0b02-4562-9255-77696ae844e1
+https://github.com/user-attachments/assets/3d72662e-6dda-4347-8d06-72c61194b155
 
 ![dashboard](docs/dashboard.png)
 
