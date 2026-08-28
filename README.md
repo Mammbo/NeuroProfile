@@ -5,9 +5,8 @@ activity onto six functional systems over time, and store each clip as a searcha
 360-dimensional vector. A Next.js dashboard plays the clip against a carpet plot of the
 predicted response, second by second, and finds the nearest neighbours in the corpus.
 
-
-![demo](docs/demo.gif)
-<!-- TODO(owner): record docs/demo.gif and docs/dashboard.png — see docs/README.md -->
+### Demo
+https://github.com/user-attachments/assets/c52f2903-0b02-4562-9255-77696ae844e1
 
 ![dashboard](docs/dashboard.png)
 
