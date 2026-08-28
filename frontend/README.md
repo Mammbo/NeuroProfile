@@ -1,8 +1,8 @@
-# NeuroProfile — Dashboard (Next.js)
+# NeuroProfile: Dashboard
 
 React/TypeScript dashboard for NeuroProfile. Renders the carpet plot (systems × time,
-playhead-synced to the video), the whole-clip system profile with confidence tiers, and
-nearest-neighbour retrieval. Reads from either FastAPI serving layer — `backend/serve.py`
+playhead-synced to the video), the  whole clip system profile with confidence tiers, and
+nearest neighbour retrieval. Reads from either FastAPI serving layer: `backend/serve.py`
 (offline)
 or `batch_encoding/analyze_server.py` (live GPU).
 
@@ -17,20 +17,18 @@ or `batch_encoding/analyze_server.py` (live GPU).
 2. Start this app:
    ```bash
    npm install
-   npm run dev                                             # http://localhost:3000
+   npm run dev
    ```
 
 **You do not need a `.env.local`.** The API base resolves at runtime:
 `localStorage["np_api"]` (whatever you paste into the header's **backend** box) beats
-`NEXT_PUBLIC_API_BASE` beats `http://localhost:8000`. That ordering is deliberate — a Colab
-cloudflared tunnel URL changes every session, and rebuilding for it would be miserable.
+`NEXT_PUBLIC_API_BASE` beats `http://localhost:8000`.
 
 Production build: `npm run build && npm start`.
 
 ## Structure
 
-- `app/page.tsx` — orchestration: fetching, the playback clock, seek, delete, layout, and the
-  honest-claims banner
+- `app/page.tsx` orchestration: fetching, the playback clock, seek, delete, layout.
 - `components/Sidebar.tsx` — the corpus list
 - `components/Uploader.tsx` — live upload with the streaming stage log and cancel
 - `components/CarpetPlot.tsx` — the canvas carpet plot and playhead overlay

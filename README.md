@@ -5,9 +5,6 @@ activity onto six functional systems over time, and store each clip as a searcha
 360-dimensional vector. A Next.js dashboard plays the clip against a carpet plot of the
 predicted response, second by second, and finds the nearest neighbours in the corpus.
 
-It is a research/portfolio project. The predictions are **population-average** — a group
-model's expectation, not a measurement of anyone's brain. That distinction is the point of
-the project, not a disclaimer bolted onto it; see [Honest claims](#honest-claims).
 
 ![demo](docs/demo.gif)
 <!-- TODO(owner): record docs/demo.gif and docs/dashboard.png — see docs/README.md -->

@@ -61,7 +61,7 @@ export default function Page() {
       if (vids.length) select(vids[0].video_id);
       else {
         setVideo(null);
-        setError("No videos yet. Upload one above, or encode a corpus / run backend/serve.py --mock.");
+        setError("No videos yet. Upload one above, or encode a corpus / run serve.py --mock.");
       }
     } catch (e) {
       setVideo(null);
@@ -172,15 +172,16 @@ export default function Page() {
             />
             <button className="apiconnect" onClick={applyApiBase}>connect</button>
           </div>
-          <div className="meta">{videos.length} clips · TRIBE v2 </div>
+          <div className="meta">{videos.length} clips · TRIBE v2</div>
         </div>
       </div>
 
       {error && <div className="err">{error}</div>}
       <hr className="rule" />
 
-      {(video || videos.length > 0 || !error) && (
-        <div className="body">
+      {/* The left rail (uploader + corpus) is ALWAYS shown, even with an empty corpus or a
+          backend error — otherwise you couldn't upload a new clip after deleting the last one. */}
+      <div className="body">
           <div>
             <Uploader onDone={onUploaded} />
             <Sidebar videos={videos} activeId={activeId} onSelect={select} />
@@ -271,8 +272,7 @@ export default function Page() {
               </div>
             </div>
           )}
-        </div>
-      )}
+      </div>
     </div>
   );
 }
